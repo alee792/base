@@ -1,10 +1,11 @@
-// Package base provides a simple, unregistered gRPC server with sensible defaults.
+// Package base provides a simple, unregistered gRPC server
+// with functional options not included in the base library.
+// Primarily useful to synchornize configurations across
+// development teams.
 package base
 
 import (
 	"net"
-
-	"google.golang.org/grpc/credentials"
 
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_zap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
@@ -13,82 +14,74 @@ import (
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 // Server for gRPC without any registered services.
 type Server struct {
-	svr    *grpc.Server
-	Logger *zap.Logger
-	Config Config
+	S *grpc.Server
 }
 
-// Config for Server that allows additional options to be injected.
-type Config struct {
-	Addr       string
-	CertPath   string
-	KeyPath    string
-	ServerOpts []grpc.ServerOption
-}
+// Option provide a functional interface for constructing grpc.ServerOptions.
+type Option func() ([]grpc.ServerOption, error)
 
 // NewServer returns a unregistered gRPC Server with
 // sensible defaults for configuration and middlewares.
-func NewServer(logger *zap.Logger, cfg Config) (*Server, error) {
-	if cfg.Addr == "" {
-		cfg.Addr = ":8443"
-	}
-
-	// Set up options and middleware.
+func NewServer(opts ...Option) (*Server, error) {
 	var oo []grpc.ServerOption
-	if cfg.CertPath != "" && cfg.KeyPath != "" {
-		creds, err := resolveCreds(cfg.CertPath, cfg.KeyPath)
+	for _, opt := range opts {
+		o, err := opt()
 		if err != nil {
-			return nil, errors.Wrap(err, "could not resolve TLS credentials")
+			return nil, err
 		}
-		oo = append(oo, creds...)
+		oo = append(oo, o...)
 	}
+	return &Server{
+		S: grpc.NewServer(oo...),
+	}, nil
+}
 
-	if logger != nil {
-		oo = append(oo,
+// ListenAndServe from the Server Config's port.
+func (s *Server) ListenAndServe(addr string) error {
+	if len(s.S.GetServiceInfo()) < 1 {
+		return errors.New("no services registered to this server")
+	}
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return errors.Wrapf(err, "unable to listen on %s", addr)
+	}
+	return s.S.Serve(lis)
+}
+
+// TLS parses certs for a valid TLS config.
+func TLS(certPath, keyPath string) Option {
+	return func() ([]grpc.ServerOption, error) {
+		creds, err := credentials.NewServerTLSFromFile(certPath, keyPath)
+		if err != nil {
+			return nil, err
+		}
+		opts := []grpc.ServerOption{grpc.Creds(creds)}
+		return opts, err
+	}
+}
+
+// Log for server and other basic, non-intrusive interceptors.
+func Log(l *zap.Logger) Option {
+	return func() ([]grpc.ServerOption, error) {
+		if l == nil {
+			l = zap.NewExample()
+		}
+		opts := []grpc.ServerOption{
 			grpc_middleware.WithUnaryServerChain(
 				grpc_ctxtags.UnaryServerInterceptor(grpc_ctxtags.WithFieldExtractor(grpc_ctxtags.CodeGenRequestFieldExtractor)),
-				grpc_zap.UnaryServerInterceptor(logger),
+				grpc_zap.UnaryServerInterceptor(l),
 				grpc_recovery.UnaryServerInterceptor(),
 			),
 			grpc_middleware.WithStreamServerChain(
 				grpc_ctxtags.StreamServerInterceptor(grpc_ctxtags.WithFieldExtractor(grpc_ctxtags.CodeGenRequestFieldExtractor)),
-				grpc_zap.StreamServerInterceptor(logger),
+				grpc_zap.StreamServerInterceptor(l),
 				grpc_recovery.StreamServerInterceptor(),
-			),
-		)
+			)}
+		return opts, nil
 	}
-
-	gs := grpc.NewServer(append(oo, cfg.ServerOpts...)...)
-	s := &Server{
-		svr:    gs,
-		Config: cfg,
-	}
-
-	return s, nil
-}
-
-// ListenAndServe from the Server Config's port.
-func (s *Server) ListenAndServe() error {
-	if len(s.svr.GetServiceInfo()) < 1 {
-		return errors.New("no services registered to this server")
-	}
-	lis, err := net.Listen("tcp", s.Config.Addr)
-	if err != nil {
-		return errors.Wrapf(err, "unable to listen on %s", s.Config.Addr)
-	}
-	return s.svr.Serve(lis)
-}
-
-// resolveCreds parses certs for a valid TLS config.
-func resolveCreds(certPath, keyPath string) ([]grpc.ServerOption, error) {
-	creds, err := credentials.NewServerTLSFromFile(certPath, keyPath)
-	if err != nil {
-		return nil, err
-	}
-	opts := []grpc.ServerOption{grpc.Creds(creds)}
-	return opts, err
 }
