@@ -1,5 +1,5 @@
-// Pacakge grpc provides a simple, unregistered gRPC server with sensible defaults.
-package grpc
+// Package base provides a simple, unregistered gRPC server with sensible defaults.
+package base
 
 import (
 	"net"
