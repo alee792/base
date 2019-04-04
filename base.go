@@ -53,6 +53,15 @@ func (s *Server) ListenAndServe(addr string) error {
 	return s.S.Serve(lis)
 }
 
+// Bundle standard gRPC options into our custom Option.
+func Bundle(opts ...grpc.ServerOption) Option {
+	var oo []grpc.ServerOption
+	for _, opt := range opts {
+		oo = append(oo, opt)
+	}
+	return func() ([]grpc.ServerOption, error) { return oo, nil }
+}
+
 // TLS parses certs for a valid TLS config.
 func TLS(certPath, keyPath string) Option {
 	return func() ([]grpc.ServerOption, error) {
